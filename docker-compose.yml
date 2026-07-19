@@ -1,0 +1,70 @@
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: pedro_luis_imoveis_mongo
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+      - MONGO_INITDB_DATABASE=${MONGO_DATABASE}
+      # Read by init/01_create_app_user.js to create the least-privilege user
+      # the backend actually connects with.
+      - MONGO_APP_USER=${MONGO_APP_USER}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD}
+    volumes:
+      # Named volume, not a bind mount: the data survives `docker compose down`,
+      # image upgrades and container rebuilds.
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+      # Runs only on an empty volume, i.e. the very first start.
+      - ./init/01_create_app_user.js:/docker-entrypoint-initdb.d/01_create_app_user.js:ro
+    # No `ports:` on purpose. Publishing 27017 would expose the database to the
+    # whole internet on a VPS. Only containers on pedro-net can reach it.
+    networks:
+      - pedro-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    # Mongo maps the whole dataset into memory; without a cap it will happily
+    # consume the entire VPS and get the OOM killer to shoot something else.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # Optional web UI. Kept out of the default `up` — start it with:
+  #   docker compose --profile tools up -d mongo-express
+  # It is reachable only through the proxy, never published directly.
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: pedro_luis_imoveis_mongo_express
+    restart: unless-stopped
+    profiles: ["tools"]
+    environment:
+      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongodb:27017/?authSource=admin
+      - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USER}
+      - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASSWORD}
+      - VIRTUAL_HOST=${MONGO_EXPRESS_HOST}
+      - LETSENCRYPT_HOST=${MONGO_EXPRESS_HOST}
+      - VIRTUAL_PORT=8081
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - pedro-net
+      - nginx-proxy
+
+volumes:
+  mongo_data:
+  mongo_config:
+
+networks:
+  # Created once with: docker network create pedro-net
+  # Shared with the backend so it can resolve the host "mongodb".
+  pedro-net:
+    external: true
+  nginx-proxy:
+    external: true
